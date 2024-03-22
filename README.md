@@ -16,3 +16,15 @@ __ANSWER:__
 https://statsbomb.com/news/the-2015-16-big-5-leagues-free-data-release-premier-league/
 
 (Also have the other 4 big european leagues for that season)
+
+### c. (10 points) 
+
+__ANSWER:__
+
+The idea of analyzing the performance trends of MLB players over their careers to identify when players typically reach their peak sounds interesting to me, because it can provide insights into player development, inform team strategy, and influence contract negotiations. The statistical model I can use here would be mixed-effects model where you could account for individual player variability over time and control for various factors that might influence team performance.
+
+### d. (5 points) 
+
+__ANSWER:__
+
+The Source can be found from Baseball-Reference because they offer a lot of statistics on MLB players and could be ideal for extracting the data to analyze players’ career trajectories and performance peaks.
