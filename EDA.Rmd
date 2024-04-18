@@ -126,7 +126,7 @@ events_rel <- events_rel %>% filter(type.name == "Pass")
 # Use an xgboost to create expected pass completeion probability
 ```{r}
 events_rel <- events_rel %>% 
-  mutate(pass.completed = ifelse(!is.na(pass.outcome.id), 1, 0)) 
+  mutate(pass.completed = ifelse(!is.na(pass.outcome.id), 0, 1)) 
 
 library(xgboost)
 
@@ -377,7 +377,7 @@ big_cols <- c(
    "possession_team.name", "opposition_team.name",
   "player.id", "player.name", "position.id", "position.name", "play_pattern.name",
   "location.x", "location.y", "pass.length", "pass.angle", "pass.end_location.x", "pass.end_location.y",
-   "pass.height.name",  "pass.body_part.name", "pass.switch",
+  "pass.completed", "pass.height.name",  "pass.body_part.name", "pass.switch",
   "pass.aerial_won", "pass.cross", "pass.cut_back", "pass.through_ball",
   "under_pressure", "passcomp_prob", "recipient.location.x", "recipient.location.y",
   "prev_pass_length", "prev_pass_angle", "prev_pass_height", "prev_pass_height", 
@@ -391,6 +391,13 @@ big_cols <- c(
 final_df <- events_vor %>% select(all_of(big_cols))
 
 ```
+
+# Only keep completed passes
+```{r}
+final_df <- final_df %>% filter(pass.completed == 1) %>% select(-pass.completed)
+
+```
+
 
 # Count the number of missing values in each column
 ```{r}
