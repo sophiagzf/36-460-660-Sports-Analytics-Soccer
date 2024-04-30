@@ -1,0 +1,589 @@
+---
+title: "Rhythm is a Footballer"
+author: "Shane Hauck"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(rmarkdown)
+library(kableExtra)
+library(ggridges)
+
+```
+
+
+## Introduction
+
+*"Playing football is very simple, but playing simple football is the hardest thing there is."* - Johan Cruyff
+
+The art of playing simple football is a skill that is easily overlooked in modern football analytics. **Rhythm** is about **speed of play**, or how fast a player releases the ball after receiving it, is a key component of game play for both players and teams as everyone has their own tendencies and play styles.
+
+Some take as little touches as possible, receiving the ball and playing it to the next teammate in as little time as possible keeping the game flowing (**high tempo**):
+
+Others take more touches, dribbling and playing at their own pace slowing the game down to spend more time on the ball (**low tempo**):
+
+Some of the most adored players by coaches are the players who keep the game flowing, playing simple football and keeping the ball moving as it shows a high level of football intelligence; not to mention the technical ability to do so indicating a quality first touch.
+
+Metaphorically, lets think of football as a orchestra. Just as in an orchestra where each instrument plays a specific role at varying rhythms to create a harmonious musical piece, in football, each player contributes to the team's ball circulation at different tempos. And at the heart of this orchestra is the conductor, the maestro who dictates the rhythm of the score. In football terms, this is called the **Regista**: the '*Tempo Setter*' who is responsible for dictating the speed of play and the level of **control** their team imposes on the opposition.
+
+This asks the question: **How can a player's rhythm and tempo be quantified and measured in terms of their control over the flow of the game?**
+
+In this analysis, we will explore the concept of rhythm in football and how it can be quantified using data. We will use multilevel modeling to quantify the effect of player, team and league on passing tempo and rhythm. Additionally, we will explore player effects on their control over the game ultimately combining these two metrics to identify the players who have the greatest influence on the game's tempo.
+
+## Data
+
+This study utilizes the event-level data released by Statsbomb for the 2015/16 season from the top-tier football leagues in Europe, encompassing the English Premier League, Spanish La Liga, German Bundesliga, Italian Serie A, and French Ligue 1. The data comprises 1,826 matches, featuring 98 teams and profiling approximately 2,500 players, resulting in a comprehensive matrix of around six million rows of action types such as shots, passes, dribbles, tackles, etc.
+
+The data is filtered to only include completed passes and carries that come from established possessions (events from a completed pass). Passes were only included if they played with their feet as headers and other types of passes will nearly always be first-time passes in this definition. Additionally, we exclude events occurring in each penalty box to focus on the center of the pitch where the rhythm of the game is typically dictated.
+
+To determine the tempo of a players actions, we calculate the amount of time it takes for a player to transfer the ball to a teammate after taking their first touch. This will serve as a proxy for the speed of play and the rhythm of the player.
+
+$$ \text{Time in Possession} = \text{Time of Pass} - \text{Time of First Touch} $$
+
+In order to measure a players control over the game flow, we calculate the proportion of game passes a player makes. This is calculated by dividing the number of passes a player makes by the total number of passes made by both teams in the game. This will serve as a proxy for the level of influence a player has in relation to all passes in a game.
+
+$$ \text{Proportion of Game Passes} = \frac{\text{Player's Number of Passes}}{\text{Total Number of Passes by Both Teams}} $$
+
+After filtering and cleaning, we are left with 773,755 passes to be used in 2 separate models to quantify the effect of player, team and league on passing rhythm and control.
+
+## Methods
+
+### Quantifying Rhythm in Passers
+
+Rhythm in football is analogous to a metronome's consistency and tempo; it can determine the flow and pace of a game. Just as a metronome's settings dictate the beat for a musician, a player's rhythm—the rate at which they release the ball—can define their and their team's tempo of play. Some players exhibit a faster rhythm, minimizing the time between receiving and passing the ball, contributing to a high-tempo game. Conversely, players with a slower rhythm take longer to release the ball after possession, often indicative of a low-tempo or more deliberate style of play.
+
+This study aims to capture the essence of these rhythms by **estimating the average time a player holds the ball during a pass**. By considering the time from a player's first touch to the subsequent pass, we can quantify this rhythm. 
+
+### Modeling Time in Possession
+
+To accurately model the distribution of Time in Possession, we performed a transformation of the response variable, utilizing the square root to achieve a more normalized distribution. The pre-modeling phase included the use of LASSO regression to identify significant predictors. These predictors encompassed variables from both the pass reception and pass played information, which were then included as fixed effects in our multilevel model.
+
+The process was reinforced with 10-fold cross-validation, which allowed us to assess the model's predictive accuracy and derive a Root Mean Square Error (RMSE). The resulting RMSE affirmed the predictability of Time in Possession, confirming the viability of our model.
+
+Our multilevel modeling approach then took into account the hierarchical nature of the data, with random effects accounting for the variation attributable to individual players, their positions, the team in possession, the opposition team, and the league. This allowed us to parse out the influence of these random effects while controlling for the fixed effects identified in the LASSO regression phase.
+
+```{css, echo=FALSE}
+.row {
+  display: flex;
+}
+.column-left {
+  flex: 75%;
+}
+.colum-right {
+  flex: 25%;
+}
+```
+
+::: row
+::: column
+**Level 1:** $$
+Y \sim R + P + a_i + b_j + c_k + d_l + e_m
+$$ **Level 2:** $$
+a_i = \alpha_o + u_i, u_i \sim N(0, \sigma_u^2)
+$$ $$
+b_j = \beta_o + v_j, v_j \sim N(0, \sigma_v^2)
+$$ $$
+c_k = \gamma_o + w_k, w_k \sim N(0, \sigma_k^2)
+$$ $$
+d_l = \delta_o + x_l, x_l \sim N(0, \sigma_l^2)
+$$ $$
+e_m = \epsilon_o + y_m, y_m \sim N(0, \sigma_m^2)
+$$
+:::
+
+::: column
+**Variable Names:**\
+$$ Y = \text{Time In Possession} $$ $$ R = \text{Pass Reception Information} $$ $$ P = \text{Pass Played Information} $$ $$ a_i = \text{Player} $$ $$ b_j = \text{Position} $$ $$ c_k = \text{Possession Team} $$ $$ d_l = \text{Opposition Team} $$ $$ e_m = \text{League} $$
+:::
+:::
+
+Additionally, we calculated the Intraclass Correlation Coefficient (ICC) to provide insight into the proportion of variance in Time in Possession that could be attributed to each random effect level. A higher ICC for a particular level would suggest substantial variability within that level, indicating a significant impact on Time in Possession.
+
+$$
+ICC = \frac{\sigma_u^2}{\sigma_u^2 + \sigma_v^2 + \sigma_k^2 + \sigma_l^2 + \sigma_m^2}
+$$
+
+### Assessing Player Control in the Flow and Tempo of Games
+
+While rhythm reflects the speed with which a player operates in the context of the team, control represents the influence a player has over the game's flow. In football, the ability to control the flow and tempo of a game is a coveted skill, with players who can dictate the rhythm and pace of play often heralded as maestros.
+
+To quantify this dimension of a player's game, we assess the proportion of game passes. This metric is computed as the ratio of passes made by a player to the total number of passes executed by both teams within a game. This proportion is emblematic of the player's participation in the team's ball circulation and serves as an index of their control over the game's rhythm and tempo.
+
+### Modeling Proportion of Game Passes
+
+The modeling of a players Proportion of Game Passes, similarly to Time in Possession, was conducted using a multilevel modeling approach. However, the model no longer included any fixed effects, as the focus was on the random effects of player, position, possession and opposition team. This approach allows us to identify and isolate the impact of a player's control over the flow of the game, above and beyond their position and team dynamics.
+
+```{css, echo=FALSE}
+.row {
+  display: flex;
+}
+.column-left {
+  flex: 75%;
+}
+.colum-right {
+  flex: 25%;
+}
+```
+
+::: row
+::: column
+**Level 1:** $$
+Y \sim a_i + b_j + c_k + d_l
+$$ **Level 2:** $$
+a_i = \alpha_o + u_i, u_i \sim N(0, \sigma_u^2)
+$$ $$
+b_j = \beta_o + v_j, v_j \sim N(0, \sigma_v^2)
+$$ $$
+c_k = \gamma_o + w_k, w_k \sim N(0, \sigma_k^2)
+$$ $$
+d_l = \delta_o + x_l, x_l \sim N(0, \sigma_l^2)
+$$
+:::
+
+::: column
+**Variable Names:**\
+$$ Y = \text{Proportion of Game Passes} $$ $$ a_i = \text{Player} $$ $$ b_j = \text{Position} $$ $$ c_k = \text{Possession Team} $$ $$ d_l = \text{Opposition Team} $$
+:::
+:::
+
+
+### Quantifying Uncertainty
+
+To rigorously quantify the uncertainty in our model estimates for both Time in Possession and Proportion of Game Passes, we implemented a bootstrap resampling method. This approach not only gives us a sense of the stability of our model coefficients but also allows us to generate empirical confidence intervals.
+
+The bootstrapping procedure involved creating multiple samples from the original dataset by sampling with replacement. For each bootstrap sample, we refitted our multilevel models to estimate Time in Possession and Proportion of Game Passes. This process was repeated for 100 iterations—to ensure a robust approximation of the sampling distribution of the model's estimates.
+
+The resulting bootstrapped coefficients and confidence intervals provide a comprehensive understanding of the uncertainty surrounding our model estimates, offering a more nuanced perspective on the influence of player, team, and league on passing rhythm and control.
+
+### Creating the Rhythm Control Score
+
+To synthesize our findings on rhythm and control into a single measure, we developed the Rhythm Impact Score. This score integrates a player's rhythm \( R_i \), representing the speed of their play, with their scaled control of the game \( C_i \), which we normalized to fall between 0 and 1. The Rhythm Control Score is then calculated by multiplying the player's rhythm by the exponential of their scaled game control, weighted by a coefficient \( \lambda \). The resulting formula is as follows:
+
+$$
+Y = R_i \times e^{C_i \times \lambda}
+$$
+
+where:
+
+$$
+Y = \text{Rhythm Control Score}
+$$
+$$
+R_i = \text{Player's Rhythm}
+$$
+$$
+C_i = \text{Player's Scaled Game Control}
+$$
+$$
+\lambda = \text{Game Control Coefficient Weight}
+$$
+
+This scoring system is designed to capture the essence of a player's influence on a match's dynamics. The Rhythm part of the score quantifies how quickly a player acts upon receiving the ball, while the Game Control part assesses their overall contribution to the team's passing play. The weight \( \lambda \) ensures that players with higher levels of control have a disproportionately larger impact on the Rhythm Control Score, reflecting the significant role of game dictators—players who command the flow of the game.
+
+
+## Results
+
+### Cross-Validation of LASSO Regression Model for Time in Possession
+
+A LASSO regression model was employed to identify significant predictors for Time in Possession and prove that modeling was plausible. Through the process of 10-fold cross-validation show the LASSO regression model achieved a **Root Mean Square Error (RMSE) of 0.345**. This suggests that the model was able to predict Time in Possession with a high degree of accuracy, providing a solid foundation for our subsequent multilevel modeling analysis.
+
+### Multilevel Modeling of Time in Possession
+
+The multilevel model for Time in Possession revealed that the random effects of player, position, possession team, opposition team, and league all had varying impacts on a player's Time in Possession. The Intraclass Correlation Coefficients (ICCs) for each random effect level (coming from the bootstrapped sampling) were on average as follows:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bootstrap_icc_time <- read_csv("bootstrap_icc_time.csv")
+
+bootstrap_icc_time %>%
+  group_by(grp) %>%
+  summarise(ICC = paste(round(mean(ICC),4) * 100, "%"))  %>%
+  rename(`Random Effect Level` = grp) %>%
+  filter(`Random Effect Level` != "Residual") %>%
+  arrange(desc(ICC)) %>%
+  kable("html", table.attr = "class='table table-striped table-hover'") %>% 
+  kable_styling(bootstrap_options = c("condensed", "hover"), full_width = FALSE) 
+```
+
+
+The results suggest that the player most significantly influences Time in Possession, with the highest ICC value of 3.52%. This indicates that a player's style of play and decision-making have a substantial impact on the time they spend in possession of the ball during a match. The position of a player plays the next most significant role, with an ICC of 0.93%, followed by the possession team (0.24%), opposition team (0.18%), and league (0.02%). These findings underscore the importance of player-specific characteristics in determining Time in Possession.
+
+### The Fastest Passers
+
+In the context of our study, a "Fast Passer" refers to a player who swiftly transitions the ball to a teammate after receiving it, thereby maintaining a high tempo of play. The analysis from our multilevel model identified the top 10 fastest passers in the dataset, based on the lowest Rhythm Effect scores.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bootstrap_results_time <- read_csv("bootstrap_results_time.csv")
+
+players_time <- bootstrap_results_time %>%
+  filter(group == "player_id") %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>%
+  summarise(mean = round(mean(estimate),3), 
+            lower = round(quantile(estimate, 0.025),3), 
+            upper = round(quantile(estimate, 0.975),3)) %>% 
+  ungroup()
+
+# Top 10 fastest passers
+players_time %>%
+  arrange(mean) %>%
+  select(-1) %>%
+  rename(`Player Name` = player_name,
+         `Position` = position, 
+         `Possession Team` = possession_team, 
+         `Rhythm Effect` = mean, 
+         `Lower CI` = lower, 
+         `Upper CI` = upper) %>%
+  head(10) %>%
+  kable("html", table.attr = "class='table table-striped table-hover'") %>% 
+  kable_styling(bootstrap_options = c("condensed", "hover"), full_width = FALSE) %>%
+  # Add title
+  add_header_above(c("Top 10 Fastest Passers" = 6))
+
+```
+
+At the top of the rankings we see Olivier Giroud, France's World Cup-winning striker and all-time leading scorer. Giroud has made a career out of being one of the best hold up strikers in the world. His ability to receive the ball with his back to goal and quickly lay it off to a teammate has made him a valuable asset to every team he has played for. This skill is reflected in his fast Rhythm Effect score, which indicates his ability to plays many 1 and 2 touch passes and rarely dribble. 
+
+Additionally we see John Terry in 3rd, one of the best English center backs of the last generation. Terry was known for his ability to read the game and quickly distribute the ball to his teammates. 
+
+In general these are players who have a "simpler" style of play, focusing on quick and efficient passing rather than dribbling or holding onto the ball. This allows them to keep the ball moving, which can be crucial in breaking down defenses and creating scoring opportunities.
+
+### The Slowest Passers
+
+On the other end of the spectrum, we have the "Slow Passers" who take their time on the ball, often holding onto it for longer periods before making a pass. These players tend to be more creative and deliberate in their decision-making, using their technical skills to slow down the flow of the game.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Bottom 10 slowest passers
+players_time %>%
+  arrange(desc(mean)) %>%
+  select(-1) %>%
+  rename(`Player Name` = player_name,
+         `Position` = position, 
+         `Possession Team` = possession_team, 
+         `Rhythm Effect` = mean, 
+         `Lower CI` = lower, 
+         `Upper CI` = upper) %>%
+  head(10) %>%
+  kable("html", table.attr = "class='table table-striped table-hover'") %>% 
+  kable_styling(bootstrap_options = c("condensed", "hover"), full_width = FALSE) %>%
+  # Add title
+  add_header_above(c("Top 10 Slowest Passers" = 6))
+```
+
+For the players with the slowest Rhythm Effect scores, we see a high number of creative wingers and forwards who are known for their dribbling ability and flair on the ball. These players often take more touches and attempt riskier passes, which can lead to a lower Rhythm Effect score as they hold onto the ball longer before making a pass.
+
+Some names that stand out include Neymar, one of the most skillful and creative players in the world, and Eden Hazard, a former Chelsea winger known for his dribbling ability and close control. These players are known for their ability to take on defenders and create scoring opportunities through individual skill, which can lead to a slower tempo of play as they look to break down defenses with their creativity. Additionally, we see Bernardo Silva when he was at Monaco, a player known for his close control and ability to retain possession in tight spaces. His slow Rhythm Effect score reflects his ability to hold onto the ball and dictate the pace of the game through his technical skills which has translated excellently to his career at Manchester City.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fast_players_10 <- bootstrap_results_time %>%
+  filter(!is.na(level)) %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>% 
+  summarise(median_estimate = median(estimate),
+            lower = quantile(estimate, 0.05),
+            upper = quantile(estimate, 0.95)
+            
+              ) %>%
+  arrange(median_estimate) %>%
+  head(10) 
+
+slow_players_10 <- bootstrap_results_time %>%
+  filter(!is.na(level)) %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>% 
+  summarise(median_estimate = median(estimate),
+            lower = quantile(estimate, 0.05),
+            upper = quantile(estimate, 0.95)
+            
+              ) %>%
+  arrange(desc(median_estimate)) %>%
+  head(10)
+
+# list of top 5 and bottom 5
+top_bottom_players <- rbind(fast_players_10 %>% head(5), slow_players_10 %>% head(5)) %>% arrange(median_estimate)
+
+# Ridge plot
+bootstrap_results_time %>%
+  filter(level %in% top_bottom_players$level) %>%
+  group_by(level) %>% 
+  mutate(median_estimate = median(estimate)) %>%
+  ungroup() %>%
+  ggplot(aes(x = estimate, y = reorder(player_name, desc(median_estimate)), fill = median_estimate)) +
+  geom_density_ridges(alpha = 0.7, scale = .97,
+                      quantile_lines = TRUE, quantiles = 2, 
+                      rel_min_height = 0.01) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Bootstrap Distribution of Player Effects on \nTime in Possession",
+       subtitle = "Top 5 Fastest and Slowest Passers",
+       x = "Rhythm Estimate",
+       y = "Player") +
+  scale_fill_viridis_c(option = "turbo", direction = -1)
+```
+
+From the bootstrapped sampling of the top 5 fastest and slowest passers, we can see the distribution of player effects on time in possession. The top 5 fastest passers have a higher density of estimates on the left side of the distribution, indicating that they have a faster tempo of play and are more likely to play quick, short passes. On the other hand, the top 5 slowest passers have a higher density of estimates on the right side of the distribution, indicating that they have a slower tempo of play and are more likely to hold onto the ball for longer periods before making a pass.
+
+
+### Multilevel Modeling of Proportion of Game Passes
+
+The Proportion of Game Passes metric identifies players who have a high level of control over the game's tempo, indicating their ability to dictate the flow of play and maintain possession for their team. The top 10 most controlling players in the dataset are listed below, based on the highest Control Effect scores.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bootstrap_results_prop <- read_csv("bootstrap_results_prop.csv")
+
+players_prop <- bootstrap_results_prop %>%
+  filter(group == "player_id") %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>%
+  summarise(mean = round(mean(estimate),3), 
+            lower = round(quantile(estimate, 0.025),3), 
+            upper = round(quantile(estimate, 0.975),3)) %>% 
+  ungroup()
+
+# Top 10 most controlling players
+players_prop %>%
+  arrange(desc(mean) )%>%
+  select(-1) %>%
+  rename(`Player Name` = player_name,
+         `Position` = position, 
+         `Possession Team` = possession_team, 
+         `Control Effect` = mean, 
+         `Lower CI` = lower, 
+         `Upper CI` = upper) %>%
+  head(10) %>%
+  kable("html", table.attr = "class='table table-striped table-hover'") %>% 
+  kable_styling(bootstrap_options = c("condensed", "hover"), full_width = FALSE) %>%
+  # Add title
+  add_header_above(c("Top 10 Controlling Players" = 6))
+```
+
+From the most controlling players, we see a mix of midfielders and defenders who are known for their ability to maintain possession and control the game's tempo. All the players in this list are players that consistently get on the ball and dictate the flow of the game.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+control_players_10 <- bootstrap_results_prop %>%
+  filter(!is.na(level)) %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>% 
+  summarise(median_estimate = median(estimate),
+            lower = quantile(estimate, 0.05),
+            upper = quantile(estimate, 0.95)
+            
+              ) %>%
+  arrange(desc(median_estimate)) %>%
+  head(10)
+
+
+# Ridge plot
+bootstrap_results_prop %>%
+  filter(level %in% control_players_10$level) %>%
+  group_by(level) %>% 
+  mutate(median_estimate = median(estimate)) %>%
+  ungroup() %>%
+  ggplot(aes(x = estimate, y = reorder(player_name, (median_estimate)), fill = median_estimate)) +
+  geom_density_ridges(alpha = 0.7, scale = .97,
+                      quantile_lines = TRUE, quantiles = 2, 
+                      rel_min_height = 0.01) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Bootstrap Distribution of Player Effects on \nProportion of Game Passes",
+       subtitle = "Top 10 Players with Most Control Over Game Passing Flow",
+       x = "Control Estimate",
+       y = "Player") +
+  scale_fill_viridis_c(option = "magma", direction = -1) 
+```
+
+
+### Rhythm Control Score
+
+The Rhythm Control Score allows us to **quantify a player's influence on the speed of possession, identifying players whose rhythm of passes most control the game.** This allows us to see who the most Regista type players are, who dictate the tempo of the game through their passing, both fast and slow.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+player_re_t <- bootstrap_results_time %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_time = estimate,
+    std.error_time = std.error
+  ) 
+
+player_re_p <- bootstrap_results_prop %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_prop = estimate,
+    std.error_prop = std.error
+  ) %>% select(level, estimate_prop, std.error_prop, boot)
+
+df <- player_re_t %>%
+  left_join(player_re_p, by = c("level", "boot")) %>%
+  filter(position != "Goalkeeper", player_name != "Mirko Valdifiori") %>%
+  select(level, player_name, position, possession_team, estimate_time, 
+         std.error_time, estimate_prop, std.error_prop, count) %>%
+  ungroup() %>%
+  mutate(scaled_estimate_prop = (estimate_prop - min(estimate_prop))/(max(estimate_prop) - min(estimate_prop))) %>%
+  mutate(estimate_full = estimate_time * exp(3 * scaled_estimate_prop)) %>% 
+  group_by(player_name, position, possession_team) %>%
+  summarise(median_estimate_full = median(estimate_full),
+            median_estimate_time = median(estimate_time),
+            median_estimate_prop = median(estimate_prop),
+            lower = quantile(estimate_full, 0.05),
+            upper = quantile(estimate_full, 0.95)) %>%
+  filter(median_estimate_prop > 0.025)
+
+library(plotly)
+
+plotly_fig <- plot_ly(data = df, x = ~median_estimate_prop, y = ~median_estimate_time, 
+                      type = 'scatter', mode = 'markers',
+                      marker = list(size = 10, color = ~median_estimate_full, 
+                                    colorscale = list( c(-1.36, "red"),   # Low values in red
+                                                       c(1.16, "blue")   # High values in blue
+                                                       ),
+                                    showscale = TRUE,
+                                    colorbar = list(title = 'Rhythm Control Score')
+                                    ),
+                      text = ~paste('Player Name: ', player_name, 
+                                    '<br>Rhythm Control Score: ', round(median_estimate_full,2),
+                                    '<br>Rhythm Effect: ', round(median_estimate_time,2),
+                                    '<br>Control Effect: ', round(median_estimate_prop,2)),
+                      hoverinfo = 'text') %>%
+  layout(title = 'Player Rhythm and Control',
+         xaxis = list(title = 'Control Effect', size = 14),
+         yaxis = list(title = 'Rhythm Effect', size = 14),
+         legend = list(title = 'Rhythm Control Score'),
+         hoverlabel = list(bgcolor = 'white')) 
+
+
+plotly_fig
+```
+
+In the interactive plot above, we see the a magnified distribution between a player's control effect and their rhythm effect. We filter to only include players who have a Control Effect greater than 0.025 to focus on players who have a strong impact on game flow. The color of the points represents the Rhythm Control Score, where blue indicates highly influential fast passing players and red indicates highly influential slow passing players. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+RhythmControlScores <- read_csv("RhythmControlScores.csv")
+
+RhythmControlScores %>%
+  arrange((median_estimate_full)) %>%
+  head(10) %>%
+  rename(`Player Name` = player_name,
+         `Position` = position, 
+         `Possession Team` = possession_team, 
+         `Rhythm Control Score` = median_estimate_full, 
+         `Lower CI` = lower, 
+         `Upper CI` = upper) %>%
+  mutate(`Rhythm Control Score` = round(`Rhythm Control Score`, 3)) %>%
+  mutate(`Lower CI` = round(`Lower CI`, 3)) %>%
+  mutate(`Upper CI` = round(`Upper CI`, 3)) %>%
+  kable("html", table.attr = "class='table table-striped table-hover'") %>%
+  kable_styling(bootstrap_options = c("condensed", "hover"), full_width = FALSE) %>%
+  # Add title
+  add_header_above(c("Top 10 Most Influential Fast Passers" = 6))
+
+```
+
+At the pinnacle of the most influential fast passers, we see Jorginho, the Italian midfielder who has made a career out of controlling the game's tempo through his quick and precise passing. His 2015/16 season at Napoli was particularly impressive, showcasing his ability to dictate the flow of play and set the rhythm Maurizio Sarri. Additionally, we see Xabi Alonso, a legendary Spanish midfielder known for his passing range and vision on the ball whose footballing philosophy is currently being implement to perfection as a manger at Bayer Leverkusen. All in all, these players are players who are known for their ability to control the game's tempo through their passing, setting the rhythm for their team and dictating the flow of play by keeping the ball moving quickly and efficiently.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+RhythmControlScores %>%
+  arrange(desc(median_estimate_full)) %>%
+  head(10) %>%
+  rename(`Player Name` = player_name,
+         `Position` = position, 
+         `Possession Team` = possession_team, 
+         `Rhythm Control Score` = median_estimate_full, 
+         `Lower CI` = lower, 
+         `Upper CI` = upper) %>%
+  mutate(`Rhythm Control Score` = round(`Rhythm Control Score`, 3)) %>%
+  mutate(`Lower CI` = round(`Lower CI`, 3)) %>%
+  mutate(`Upper CI` = round(`Upper CI`, 3)) %>%
+  kable("html", table.attr = "class='table table-striped table-hover'") %>%
+  kable_styling(bootstrap_options = c("condensed", "hover"), full_width = FALSE) %>%
+  # Add title
+  add_header_above(c("Top 10 Most Influential Slow Passers" = 6))
+```
+
+In contrast, the players with the slowest Rhythm Control Scores are known for their ability to slow down the game and dictate the pace of play through their technical skills and creativity. These players often take more touches on the ball and look to break down defenses with their dribbling ability and close control. Notable names Neymar,and Eden Hazard appear at the top of the list showing that these players are players who get on the ball a lot and dictate the flow of the game through their dribbling and creativity. Additionally we see players like Marco Veratti and Luka Modric who are known for their ability to retain possession and dictate the pace of the game through their technical skills and vision on the ball. These players are known for their ability to control the game's tempo and set the rhythm for their team, slowing down the game when necessary and dictating the flow of play through their passing and ball control.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+player_re_t <- bootstrap_results_time %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_time = estimate,
+    std.error_time = std.error
+  ) 
+
+player_re_p <- bootstrap_results_prop %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_prop = estimate,
+    std.error_prop = std.error
+  ) %>% select(level, estimate_prop, std.error_prop, boot)
+
+
+slow_control_players_10 <- RhythmControlScores %>%
+  arrange(desc(median_estimate_full)) %>%
+  head(10)
+
+fast_control_players_10 <- RhythmControlScores %>%
+  arrange(median_estimate_full) %>%
+  head(10)
+top_bottom_players <- bind_rows(slow_control_players_10 %>% head(5), fast_control_players_10 %>% head(5))
+
+left_join(player_re_t, player_re_p, by = c("level", "boot"))  %>%
+  filter(position != "Goalkeeper") %>%
+  filter(player_name != "Mirko Valdifiori") %>%
+  select(level, player_name, position, possession_team, estimate_time, 
+         std.error_time, estimate_prop, std.error_prop, count) %>%
+  mutate(scaled_estimate_prop = (estimate_prop - min(estimate_prop))/(max(estimate_prop) - min(estimate_prop)))  %>%
+  mutate(estimate_full = estimate_time * exp(3 * scaled_estimate_prop)) %>%
+  filter(player_name %in% top_bottom_players$player_name) %>%
+  group_by(player_name, position, possession_team) %>%
+  mutate(median_estimate_full = median(estimate_full)) %>%
+  ggplot(aes(x = estimate_full, y = reorder(player_name, desc(median_estimate_full)), fill = median_estimate_full)) +
+  geom_density_ridges(alpha = 0.7, scale = .97,
+                      quantile_lines = TRUE, quantiles = 2, 
+                      rel_min_height = 0.01) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Bootstrap Distribution of Player Effects on \nRhythm Control Score",
+       subtitle = "Top 5 Fastest and Slowest Passers with Most Control \nOver Game Passing Flow",
+       x = "Rhythm Control Score",
+       y = "Player") +
+  scale_fill_viridis_c(option = "turbo", direction = -1) 
+```
+
+When looking at the distribution of player effects on Rhythm Control, we see that the top 5 fastest passers have a significantly lower estimate of Rhythm Control Score compared to the top 5 slowest passers. This indicates that players have a significant impact on the game's tempo and flow of play through their passing and ball control. 
+
+
+## Discussion
+
+The results of our multilevel models provide a comprehensive view into the rhythm and control dynamics of players across top-tier European football leagues. The study confirms that rhythm, defined as the speed at which players release the ball, significantly varies not just between players but also across positions, teams, and even leagues. This variance suggests that players adapt their playing style to the tactical demands and cultures of their teams and leagues.
+
+The introduction of the Rhythm Control Score (RCS) allows us to quantify these differences in a meaningful way, combining the elements of quickness in play with the degree of control a player has over the game's flow. Our analysis shows that this score can distinguish between players who are quick and effective in their play style and those who control the game by holding onto the ball longer, often to create plays or stabilize the game's tempo.
+
+Given the limitations and findings of this study, future research could expand the dataset to include more seasons and possibly lower-tier leagues to examine if the observed patterns hold across a broader spectrum of professional football. Further tuning of the Rhythm Control Score, particularly the lambda coefficient, could refine its sensitivity to different styles of play and its predictive power regarding game outcomes, such as chance creation or match-winning plays.
+
+Exploring additional variables, like player speed, number of defenders contested, and game phase, could provide deeper insights into the subtleties of rhythm and control. Advanced machine learning models could also be employed to handle the high dimensionality and complexity of football game data more effectively.
+
+The theoretical framework posited in this study suggests a strong link between a player's rhythm and their ability to affect game outcomes positively, notably in creating scoring opportunities. Validating this theory could involve a detailed analysis of game situations where fast rhythm combined with high control correlates with increased chance creation or goal scoring.
+
+In summary, while this study lays a solid foundation for understanding the intricate dynamics of rhythm and control in football, there is ample room for further exploration and refinement. The potential for these metrics to influence player selection, tactical decisions, and coaching methodologies makes this an exciting avenue for future research in sports analytics.
+
+## References
+
+StatsBomb. “The 2015-16 Big 5 Leagues Free Data Release: Premier League.” StatsBomb, https://statsbomb.com/news/the-2015-16-big-5-leagues-free-data-release-premier-league/. 
+
+Smith, John. “Explaining the Tempo Setter Player Role Analysis.” The Mastermind Site, 15 Aug. 2022, https://themastermindsite.com/2022/08/15/explaining-the-tempo-setter-player-role-analysis/. 
+
+Lee, Jamie. “Rhythm in a Football Player.” Whee Korea, https://wheecorea.com/total-football-way/rhythm-in-a-football-player/. 
+
+StatsBomb. “Identifying Fast Passers Using Data.” StatsBomb, https://statsbomb.com/articles/soccer/identifying-fast-passers-using-data/. 
+
+## Appendix
+
+All code and data used in this analysis are available on our GitHub repository: [https://github.com/sophiagzf/36-460-660-Sports-Analytics-Soccer]

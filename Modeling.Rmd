@@ -1,0 +1,945 @@
+---
+title: "Modeling"
+author: "Shane Hauck"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load packages
+```{r}
+library(tidyverse)
+library(glmnet)
+library(lme4)
+library(broom.mixed)
+
+```
+
+# Load data
+```{r}
+#full_df <- read_csv("cleaned_WorldCup_passes.csv")
+epl_df <- read_csv("EPL_1516_passes.csv") %>% mutate(league = "EPL")
+la_liga_df <- read_csv("LaLiga_1516_passes.csv") %>% mutate(league = "La Liga")
+serie_a_df <- read_csv("SerieA_1516_passes.csv") %>% mutate(league = "Serie A")
+bundesliga_df <- read_csv("Bundesliga_1516_passes.csv") %>% mutate(league = "Bundesliga")
+ligue_1_df <- read_csv("Ligue1_1516_passes.csv") %>% mutate(league = "Ligue 1")
+
+full_df <- rbind(epl_df, la_liga_df, serie_a_df, bundesliga_df, ligue_1_df)
+
+
+```
+
+# Group positions
+```{r}
+full_df <- full_df %>%
+  mutate(
+    position = case_when(
+      grepl("Goalkeeper", position_name) ~ "Goalkeeper",
+      grepl("Center Back", position_name) ~ "Center Back",
+      grepl("Left Back", position_name) ~ "Full Back",
+      grepl("Right Back", position_name) ~ "Full Back",
+      grepl("Wing Back", position_name) ~ "Wing Back",
+      grepl("Defensive Midfield", position_name) ~ "Defensive Midfield",
+      grepl("Center Midfield", position_name) ~ "Center Midfield",
+      grepl("Attacking Midfield", position_name) ~ "Attacking Midfield",
+      grepl("Left Wing", position_name) ~ "Winger",
+      grepl("Right Wing", position_name) ~ "Winger",
+      grepl("Right Midfield", position_name) ~ "Winger",
+      grepl("Left Midfield", position_name) ~ "Winger",
+      grepl("Forward", position_name) ~ "Forward"
+    )
+  ) %>%
+  select(-position_name)
+```
+
+
+# Filter data to be x between 20 and 100
+```{r}
+full_df <- full_df %>%
+  filter(location_x >= 20 & location_x <= 100)
+
+```
+
+# Filter to keep passes with body part including Foot
+```{r}
+full_df <- full_df %>%
+  filter(str_detect(pass_body_part, "Foot"))
+
+```
+
+
+# Square root timeInPoss
+```{r}
+full_df <- full_df %>%
+  mutate(totalTimeInPoss_sqrt = sqrt(totalTimeInPoss))
+
+```
+
+# Standardize numeric columns
+```{r}
+num_cols <- full_df %>% select_if(is.numeric) %>% select(-totalTimeInPoss_sqrt) %>% colnames()
+
+# full_df <- full_df %>%
+#   mutate_at(vars(num_cols), (. - min(.) ) / (max(.) - min(.)))
+
+```
+
+
+# Columns for LASSO model
+```{r}
+rmv_cols <- c(
+  "possession_team", "opposition_team", "player_id", "player_name", "position_id", "totalTimeInPoss", "match_id"
+)
+
+lasso_df <- full_df %>%
+  select(-all_of(rmv_cols)) %>% 
+  select(id, totalTimeInPoss_sqrt, everything())
+
+```
+
+# Fit LASSO model to predict totalTimeInPoss_sqrt to extract important features
+```{r}
+set.seed(12)
+lasso_model <- cv.glmnet(
+  x = as.matrix(lasso_df %>% select(-id, -totalTimeInPoss_sqrt) %>% select_if(is.numeric)),
+  y = lasso_df$totalTimeInPoss_sqrt,
+  alpha = 1,
+  family = "gaussian",
+  nfolds = 10
+)
+
+plot(lasso_model)
+
+# Extract coefficients at lambda.min
+coefficients <- coef(lasso_model, s = "lambda.min")
+
+# Coerce to a regular matrix and check non-zero entries
+coefficients_matrix <- as.matrix(coefficients)
+non_zero_indices <- which(coefficients_matrix[,1] != 0)
+
+# Extract names of non-zero coefficients
+non_zero_coefficients <- rownames(coefficients_matrix)[non_zero_indices]
+
+# Remove intercept
+non_zero_coefficients <- non_zero_coefficients[-1]
+
+```
+
+# Fit model with training testing on RMSE with test
+```{r}
+set.seed(12)
+train_idx <- sample(1:nrow(lasso_df), 0.8*nrow(lasso_df))
+train_data <- lasso_df[train_idx,]
+test_data <- lasso_df[-train_idx,]
+
+x_train <- as.matrix(train_data %>% select(-id, -totalTimeInPoss_sqrt))
+y_train <- train_data$totalTimeInPoss_sqrt
+x_test <- as.matrix(test_data %>% select(-id, -totalTimeInPoss_sqrt))
+y_test <- test_data$totalTimeInPoss_sqrt
+
+# Fit LASSO model using cross-validation
+lasso_model <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  alpha = 1,
+  family = "gaussian",
+  nfolds = 10
+)
+
+# Plot the cross-validated LASSO model
+plot(lasso_model)
+
+# Predict on the test dataset using the lambda that gives minimum mean cross-validated error
+predicted_values <- predict(lasso_model, s = "lambda.min", newx = x_test)
+
+# Calculate RMSE
+rmse <- sqrt(mean((y_test - predicted_values)^2))
+print(paste("RMSE:", rmse))
+
+# Plotting predicted vs observed values
+obs_vs_pred <- data.frame(Observed = y_test, Predicted = as.vector(predicted_values))
+ggplot(obs_vs_pred, aes(x = Predicted, y = Observed)) +
+  geom_point(alpha = 0.25) +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(title = "Observed vs Predicted values",
+       x = "Predicted",
+       y = "Observed")
+
+```
+
+# Fit Multilevel model with player effects modeling time in possession until pass
+```{r}
+# Create formula with non-zero coefficients
+formula <- as.formula(paste("totalTimeInPoss_sqrt ~", 
+                            paste(non_zero_coefficients, collapse = " + "),
+                            " + (1 | player_id) + (1 | position) + (1 | opposition_team) + (1 | possession_team) +
+                            (1 | league)"))
+
+# Fit multilevel model
+time_mod <- lmer(
+  formula = formula,
+  data = full_df#,
+ # family = Gamma(link = "log")
+)
+summary(time_mod)
+
+# Extract fixed effects
+fixed_effects_time <- tidy(time_mod, effects = "fixed")
+
+# Extract random effects
+random_effects_time <- tidy(time_mod, effects = "ran_vals")
+```
+
+# Plot Resiudals
+
+```{r}
+# Extract residuals
+residuals <- residuals(time_mod)
+
+# Plot residuals
+ggplot(data.frame(residuals = residuals), aes(x = residuals)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Residuals of the model",
+       x = "Residuals",
+       y = "Frequency")
+
+```
+
+# Join random effects with player names
+```{r}
+player_names <- full_df %>%
+  select(player_id, player_name, position, possession_team) %>%
+  group_by(player_id) %>%
+  mutate(count = n()) %>%
+  ungroup() %>% 
+  distinct(player_id, .keep_all = T)
+
+random_effects_time <- random_effects_time %>%
+  #separate(level, into = c("player_id", "position"), sep = ":") %>%
+  left_join(player_names %>% mutate(player_id = as.character(player_id)),
+            by = c("level" = "player_id"))
+
+```
+
+
+# Calculate Intraclass Correlation Coefficient
+```{r}
+VarCorr(time_mod) %>%
+  as_tibble() %>%
+  mutate(ICC = vcov / sum(vcov)) %>%
+  select(grp, ICC)
+```
+
+
+# Bootstrap to get confidence intervals
+```{r}
+# Empty dataframe to store bootstrap results
+bootstrap_results_time <- data.frame()
+
+bootstrap_icc_time <- data.frame()
+
+# Number of bootstrap samples
+n_samples <- 100
+
+# Bootstrap loop
+set.seed(12)
+for(i in 1:n_samples){
+  # Sample with replacement
+  sample_idx <- sample(1:nrow(full_df), replace = T)
+  sample_df <- full_df[sample_idx,]
+  
+  # Fit model
+  time_mod_sample <- lmer(
+    formula = formula,
+    data = sample_df#,
+    #family = Gamma(link = "log")
+  )
+  
+  # Extract fixed effects
+  fixed_effects_sample <- tidy(time_mod_sample, effects = "fixed")
+  
+  # Extract random effects
+  random_effects_sample <- tidy(time_mod_sample, effects = "ran_vals")
+  
+  # Store results
+  bootstrap_results_time <- rbind(bootstrap_results_time, 
+                                  rbind(fixed_effects_sample %>% mutate(level = NA, group = NA), 
+                                        random_effects_sample %>% mutate(statistic = NA)) %>% mutate(boot = i))
+  
+  # Calculate ICC
+  icc_sample <- VarCorr(time_mod_sample) %>%
+    as_tibble() %>%
+    mutate(ICC = vcov / sum(vcov)) %>%
+    select(grp, ICC) %>%
+    mutate(boot = i)
+  
+  bootstrap_icc_time <- rbind(bootstrap_icc_time, icc_sample)
+}
+
+# Join with player names
+bootstrap_results_time <- bootstrap_results_time %>%
+  left_join(player_names %>% mutate(player_id = as.character(player_id)),
+            by = c("level" = "player_id"))
+
+# Write to csv
+write_csv(bootstrap_results_time, "bootstrap_results_time.csv")
+
+write_csv(bootstrap_icc_time, "bootstrap_icc_time.csv")
+
+
+```
+
+
+
+
+# Filter for opposition_team
+```{r}
+opposition_df <- random_effects_time %>%
+  filter(str_detect(group, "opposition_team"))
+```
+
+# Filter for possession_team
+```{r}
+possession_df <- random_effects_time %>%
+  filter(str_detect(group, "possession_team"))
+```
+
+# Filter for league
+```{r}
+league_df <- random_effects_time %>%
+  filter(str_detect(group, "league"))
+
+```
+
+# Filter for position
+```{r}
+position_df <- random_effects_time %>%
+  filter(group == "position")
+
+```
+
+
+# Players whose estimate is closest to 0
+```{r}
+random_effects_time %>%
+  filter(count > 300) %>%
+  arrange(abs(estimate)) %>%
+  head(100) %>% view()
+
+```
+
+
+# Create proportion of total passes for both teams that a player plays in a game
+```{r}
+full_df <- full_df %>% group_by(match_id) %>% 
+  mutate(match_npasses = n()) %>%
+  group_by(match_id, player_id) %>%
+  mutate(player_npasses = n()) %>% 
+  ungroup() %>%
+  mutate(scaled_player_npasses = (player_npasses - min(player_npasses))/(max(player_npasses) - min(player_npasses))) %>%
+  mutate(prop_passes = player_npasses/match_npasses) %>%
+  mutate(scaled_prop_passes = sqrt(prop_passes * scaled_player_npasses)) %>%
+  ungroup() 
+  
+```
+
+# Multilevel model for scaled proportion of passes
+```{r}
+# Fit multilevel model
+prop_mod <- lmer(prop_passes ~ (1 | player_id) + (1 | position) + 
+                   (1 | opposition_team) + (1 | possession_team), 
+                 data = full_df)
+
+```
+
+# Extract random effects
+```{r}
+random_effects_prop <- tidy(prop_mod, effects = "ran_vals") %>%
+  left_join(player_names %>% mutate(player_id = as.character(player_id)),
+            by = c("level" = "player_id"))
+
+```
+
+# Calculate ICC
+```{r}
+VarCorr(prop_mod) %>%
+  as_tibble() %>%
+  mutate(ICC = vcov / sum(vcov)) %>%
+  select(grp, ICC)
+```
+
+# Bootstrap to get confidence intervals
+```{r}
+# Empty dataframe to store bootstrap results
+bootstrap_results_prop <- data.frame()
+
+bootstrap_icc_prop <- data.frame()
+
+# Number of bootstrap samples
+n_samples <- 100
+
+# Bootstrap loop
+set.seed(12)
+for(i in 1:n_samples){
+  # Sample with replacement
+  sample_idx <- sample(1:nrow(full_df), replace = T)
+  sample_df <- full_df[sample_idx,]
+  
+  # Fit model
+  prop_mod_sample <- lmer(
+    formula = prop_passes ~ (1 | player_id) + (1 | position) + 
+      (1 | opposition_team) + (1 | possession_team),
+    data = sample_df
+  )
+  
+  # Extract fixed effects
+  fixed_effects_sample <- tidy(prop_mod_sample, effects = "fixed")
+  
+  # Extract random effects
+  random_effects_sample <- tidy(prop_mod_sample, effects = "ran_vals")
+  
+  # Store results
+  bootstrap_results_prop <- rbind(bootstrap_results_prop, 
+                                  rbind(fixed_effects_sample %>% mutate(level = NA, group = NA), 
+                                        random_effects_sample %>% mutate(statistic = NA)) %>% mutate(boot = i))
+  
+  # Calculate ICC
+  icc_sample <- VarCorr(prop_mod_sample) %>%
+    as_tibble() %>%
+    mutate(ICC = vcov / sum(vcov)) %>%
+    select(grp, ICC) %>%
+    mutate(boot = i)
+  
+  bootstrap_icc_prop <- rbind(bootstrap_icc_prop, icc_sample)
+}
+
+# Join with player names
+bootstrap_results_prop <- bootstrap_results_prop %>%
+  left_join(player_names %>% mutate(player_id = as.character(player_id)),
+            by = c("level" = "player_id"))
+
+# Write to csv
+write_csv(bootstrap_results_prop, "bootstrap_results_prop.csv")
+
+write_csv(bootstrap_icc_prop, "bootstrap_icc_prop.csv")
+
+
+
+```
+
+
+```{r}
+player_re_t <- random_effects_time %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_time = estimate,
+    std.error_time = std.error
+  ) 
+
+player_re_p <- random_effects_prop %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_prop = estimate,
+    std.error_prop = std.error
+  ) %>% select(level, estimate_prop, std.error_prop)
+
+left_join(player_re_t, player_re_p)  %>%
+  select(level, player_name, position, possession_team, estimate_time, std.error_time, estimate_prop, std.error_prop, count) %>%
+  mutate(scaled_estimate_prop = (estimate_prop - min(estimate_prop))/(max(estimate_prop) - min(estimate_prop)))  %>%
+  mutate(estimate_full = estimate_time * exp(3 * scaled_estimate_prop)) %>% 
+  arrange(abs(estimate_full)) %>%
+  view()
+
+```
+
+
+# Ridge plots with bootstrapped results time
+```{r}
+library(ggridges)
+
+bootstrap_results_time <- read_csv("bootstrap_results_time.csv")
+
+# Top 10 players with the smallest estimate
+fast_players_10 <- bootstrap_results_time %>%
+  filter(!is.na(level)) %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>% 
+  summarise(median_estimate = median(estimate),
+            lower = quantile(estimate, 0.05),
+            upper = quantile(estimate, 0.95)
+            
+              ) %>%
+  arrange(median_estimate) %>%
+  head(10) 
+
+slow_players_10 <- bootstrap_results_time %>%
+  filter(!is.na(level)) %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>% 
+  summarise(median_estimate = median(estimate),
+            lower = quantile(estimate, 0.05),
+            upper = quantile(estimate, 0.95)
+            
+              ) %>%
+  arrange(desc(median_estimate)) %>%
+  head(10)
+
+# list of top 5 and bottom 5
+top_bottom_players <- rbind(fast_players_10 %>% head(5), slow_players_10 %>% head(5)) %>% arrange(median_estimate)
+
+# Ridge plot
+bootstrap_results_time %>%
+  filter(level %in% top_bottom_players$level) %>%
+  group_by(level) %>% 
+  mutate(median_estimate = median(estimate)) %>%
+  ungroup() %>%
+  ggplot(aes(x = estimate, y = reorder(player_name, desc(median_estimate)), fill = median_estimate)) +
+  geom_density_ridges(alpha = 0.7, scale = .97,
+                      quantile_lines = TRUE, quantiles = 2, 
+                      rel_min_height = 0.01) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Bootstrap Distribution of Player Effects on Time in Possession",
+       subtitle = "Top 5 Fastest and Slowest Passers",
+       x = "Rhythm Estimate",
+       y = "Player") +
+  scale_fill_viridis_c(option = "turbo", direction = -1) +
+  theme(axis.text.y = element_text(size = 10)) +
+  theme(axis.text.x = element_text(size = 10)) +
+  theme(plot.title = element_text(size = 16, face = "bold")) +
+  theme(plot.subtitle = element_text(size = 10, face = "bold")) +
+  theme(axis.title = element_text(size = 10, face = "bold"))
+```
+
+
+# Ridge plots with bootstrapped results prop
+```{r}
+bootstrap_results_prop <- read_csv("bootstrap_results_prop.csv")
+
+# Top 10 players with the largest estimate
+control_players_10 <- bootstrap_results_prop %>%
+  filter(!is.na(level)) %>%
+  filter(position != "Goalkeeper") %>%
+  group_by(level, player_name, position, possession_team) %>% 
+  summarise(median_estimate = median(estimate),
+            lower = quantile(estimate, 0.05),
+            upper = quantile(estimate, 0.95)
+            
+              ) %>%
+  arrange(desc(median_estimate)) %>%
+  head(10)
+
+
+# Ridge plot
+bootstrap_results_prop %>%
+  filter(level %in% control_players_10$level) %>%
+  group_by(level) %>% 
+  mutate(median_estimate = median(estimate)) %>%
+  ungroup() %>%
+  ggplot(aes(x = estimate, y = reorder(player_name, (median_estimate)), fill = median_estimate)) +
+  geom_density_ridges(alpha = 0.7, scale = .97,
+                      quantile_lines = TRUE, quantiles = 2, 
+                      rel_min_height = 0.01) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Bootstrap Distribution of Player Effects on Proportion of Game Passes",
+       subtitle = "Top 10 Players with Most Control Over Game Passing Flow",
+       x = "Control Estimate",
+       y = "Player") +
+  scale_fill_viridis_c(option = "magma", direction = -1) +
+  theme(axis.text.y = element_text(size = 10)) +
+  theme(axis.text.x = element_text(size = 10)) +
+  theme(plot.title = element_text(size = 16, face = "bold")) +
+  theme(plot.subtitle = element_text(size = 10, face = "bold")) +
+  theme(axis.title = element_text(size = 10, face = "bold"))
+
+```
+
+
+# Combining Rhythm and Control
+```{r}
+player_re_t <- bootstrap_results_time %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_time = estimate,
+    std.error_time = std.error
+  ) 
+
+player_re_p <- bootstrap_results_prop %>%
+  filter(group == "player_id") %>%
+  rename(
+    estimate_prop = estimate,
+    std.error_prop = std.error
+  ) %>% select(level, estimate_prop, std.error_prop, boot)
+
+RhythmControlScores <- left_join(player_re_t, player_re_p, by = c("level", "boot"))  %>%
+  filter(position != "Goalkeeper") %>%
+  filter(player_name != "Mirko Valdifiori") %>%
+  select(level, player_name, position, possession_team, estimate_time, 
+         std.error_time, estimate_prop, std.error_prop, count) %>%
+  ungroup() %>%
+  mutate(scaled_estimate_prop = (estimate_prop - min(estimate_prop))/(max(estimate_prop) - min(estimate_prop)))  %>%
+  mutate(estimate_full = estimate_time * exp(3 * scaled_estimate_prop)) %>% 
+  group_by(player_name, position, possession_team) %>%
+  summarise(median_estimate_full = median(estimate_full),
+            lower = quantile(estimate_full, 0.05),
+            upper = quantile(estimate_full, 0.95)) %>%
+  ungroup()
+
+write_csv(RhythmControlScores, "RhythmControlScores.csv")
+  
+# Top 10 players with the largest estimate
+slow_control_players_10 <- RhythmControlScores %>%
+  arrange(desc(median_estimate_full)) %>%
+  head(10)
+
+fast_control_players_10 <- RhythmControlScores %>%
+  arrange(median_estimate_full) %>%
+  head(10)
+
+top_bottom_players <- bind_rows(slow_control_players_10 %>% head(5), fast_control_players_10 %>% head(5))
+
+# Ridge plot
+left_join(player_re_t, player_re_p, by = c("level", "boot"))  %>%
+  filter(position != "Goalkeeper") %>%
+  filter(player_name != "Mirko Valdifiori") %>%
+  select(level, player_name, position, possession_team, estimate_time, 
+         std.error_time, estimate_prop, std.error_prop, count) %>%
+  mutate(scaled_estimate_prop = (estimate_prop - min(estimate_prop))/(max(estimate_prop) - min(estimate_prop)))  %>%
+  mutate(estimate_full = estimate_time * exp(3 * scaled_estimate_prop)) %>%
+  filter(player_name %in% top_bottom_players$player_name) %>%
+  group_by(player_name, position, possession_team) %>%
+  mutate(median_estimate_full = median(estimate_full)) %>%
+  ggplot(aes(x = estimate_full, y = reorder(player_name, desc(median_estimate_full)), fill = median_estimate_full)) +
+  geom_density_ridges(alpha = 0.7, scale = .97,
+                      quantile_lines = TRUE, quantiles = 2, 
+                      rel_min_height = 0.01) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Bootstrap Distribution of Player Effects Rhythm Control",
+       subtitle = "Top 5 Fastest and Slowest Passers with Most Control Over Game Passing Flow",
+       x = "Rhythm Control Score",
+       y = "Player") +
+  scale_fill_viridis_c(option = "turbo", direction = -1) +
+  theme(axis.text.y = element_text(size = 10)) +
+  theme(axis.text.x = element_text(size = 10)) +
+  theme(plot.title = element_text(size = 16, face = "bold")) +
+  theme(plot.subtitle = element_text(size = 10, face = "bold")) +
+  theme(axis.title = element_text(size = 10, face = "bold"))
+
+
+```
+
+
+```{r}
+df <- player_re_t %>%
+  left_join(player_re_p, by = c("level", "boot")) %>%
+  filter(position != "Goalkeeper", player_name != "Mirko Valdifiori") %>%
+  select(level, player_name, position, possession_team, estimate_time, 
+         std.error_time, estimate_prop, std.error_prop, count) %>%
+  ungroup() %>%
+  mutate(scaled_estimate_prop = (estimate_prop - min(estimate_prop))/(max(estimate_prop) - min(estimate_prop))) %>%
+  mutate(estimate_full = estimate_time * exp(3 * scaled_estimate_prop)) %>% 
+  group_by(player_name, position, possession_team) %>%
+  summarise(median_estimate_full = median(estimate_full),
+            median_estimate_time = median(estimate_time),
+            median_estimate_prop = median(estimate_prop),
+            lower = quantile(estimate_full, 0.05),
+            upper = quantile(estimate_full, 0.95)) %>%
+  filter(median_estimate_prop > 0.025)
+
+# Create the ggplot
+p <- ggplot(df, aes(x = median_estimate_prop, y = median_estimate_time, color = median_estimate_full)) +
+  geom_point(alpha = 0.5, size = 3) +
+  theme_bw() +
+  scale_color_gradientn(colors = c("orange", "purple", "blue")) +
+  ggtitle("Player Performance Estimates")
+
+# Convert to plotly and add custom hover info
+plotly_fig <- plot_ly(data = df, x = ~median_estimate_prop, y = ~median_estimate_time, 
+                      type = 'scatter', mode = 'markers',
+                      marker = list(size = 10, color = ~median_estimate_full, 
+                                    colorscale = list( c(-1.36, "red"),   # Low values in red
+                                                       c(1.16, "blue")   # High values in blue
+                                                       )),
+                      text = ~paste('Player Name: ', player_name, 
+                                    '<br>Rhythm Control Score: ', round(median_estimate_full,2),
+                                    '<br>Rhythm Effect: ', round(median_estimate_time,2),
+                                    '<br>Control Effect: ', round(median_estimate_prop,2)),
+                      hoverinfo = 'text') %>%
+  layout(title = 'Player Rhythm and Control',
+         xaxis = list(title = 'Control Effect', size = 14),
+         yaxis = list(title = 'Rhythm Effect', size = 14),
+         legend = list(title = 'Rhythm Control Score'),
+         hoverlabel = list(bgcolor = 'white')) 
+
+
+plotly_fig
+
+
+
+
+```
+
+
+
+
+
+
+<!-- # Fit Bayesian Multilevel model with player effects modeling time in possession until pass -->
+<!-- ```{r} -->
+<!-- library(rstanarm) -->
+<!-- ``` -->
+
+<!-- # Make player_id a factor -->
+<!-- ```{r} -->
+<!-- full_df$player_id <- as.factor(full_df$player_id) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # Create formula with non-zero coefficients -->
+<!-- formula <- as.formula(paste("totalTimeInPoss_sqrt ~",  -->
+<!--                             paste(non_zero_coefficients, collapse = " + "), -->
+<!--                             " + (1 | player_id) + (1 | position) + (1 | opposition_team) + (1 | possession_team) + -->
+<!--                             (1 | league)")) -->
+
+<!-- # Fit multilevel model -->
+<!-- time_mod_bayes <- stan_glmer( -->
+<!--   formula = formula, -->
+<!--   data = full_df, -->
+<!--   # Gamma distribution -->
+<!--   family = Gamma(link = "log"), -->
+<!--   seed = 12, -->
+<!--   iter = 2000, -->
+<!--   chains = 4, -->
+<!--   cores = 4 -->
+<!-- ) -->
+
+
+<!-- ``` -->
+
+<!-- # Fit Bayesian Multilevel model with player effects modeling proportion of passes -->
+<!-- ```{r} -->
+<!-- # Fit multilevel model -->
+<!-- prop_mod_bayes <- stan_lmer(prop_passes ~ (1 | player_id) + (1 | position) +  -->
+<!--                    (1 | opposition_team) + (1 | possession_team),  -->
+<!--                  data = full_df, -->
+<!--                  seed = 12, -->
+<!--                  iter = 500, -->
+<!--                  chains = 4, -->
+<!--                  cores = 8) -->
+
+<!-- ``` -->
+
+
+<!-- # Change player_id to be 0-N_players -->
+<!-- ```{r} -->
+<!-- player_indexs <- full_df %>% -->
+<!--   distinct(player_id) %>% -->
+<!--   mutate(player_i = row_number()) -->
+<!-- position_indexs <- full_df %>% -->
+<!--   distinct(position) %>% -->
+<!--   mutate(position_i = row_number()) -->
+<!-- oppteam_indexs <- full_df %>% -->
+<!--   distinct(opposition_team) %>% -->
+<!--   mutate(oppteam_i = row_number()) -->
+<!-- possteam_indexs <- full_df %>% -->
+<!--   distinct(possession_team) %>% -->
+<!--   mutate(possteam_i = row_number()) -->
+<!-- league_indexs <- full_df %>% -->
+<!--   distinct(league) %>% -->
+<!--   mutate(league_i = row_number()) -->
+
+<!-- # join with full_df -->
+<!-- full_df <- full_df %>% -->
+<!--   left_join(player_indexs, by = "player_id") %>% -->
+<!--   left_join(position_indexs, by = "position") %>% -->
+<!--   left_join(oppteam_indexs, by = "opposition_team") %>% -->
+<!--   left_join(possteam_indexs, by = "possession_team") %>% -->
+<!--   left_join(league_indexs, by = "league") -->
+
+
+<!-- ``` -->
+
+
+<!-- # Possession time model with Stan -->
+<!-- ```{r} -->
+<!-- library(rstan) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- model_code <- " -->
+<!-- data { -->
+
+<!--   int<lower=0> N_passes; // Number of passes (observations) -->
+<!--   int N_players; // Number of players -->
+<!--   int<lower=0> N_positions; // Number of positions -->
+<!--   int<lower=0> N_possteams; // Number of possession teams -->
+<!--   int<lower=0> N_oppteams; // Number of opposition teams -->
+<!--   int<lower=0> N_leagues; // Number of leagues -->
+
+<!--   // Response Variable -->
+<!--   vector[N_passes] totalTimeInPoss_sqrt; // Time in possession -->
+
+<!--   // Fixed Effects -->
+<!--   vector[N_passes] location_x; // x-coordinate of the pass -->
+<!--   vector[N_passes] pass_length; // Pass length of the pass -->
+<!--   vector[N_passes] pass_angle; // Angle of the pass -->
+<!--   vector[N_passes] pass_end_x; // x-coordinate of the end of the pass -->
+<!--   vector[N_passes] pass_end_y; // y-coordinate of the end of the pass -->
+<!--   vector[N_passes] pass_completion_probability; // Completion probability of the pass -->
+<!--   vector[N_passes] recipient_x; // Reception x-coordinate of the player -->
+<!--   vector[N_passes] recipient_y; // Reception y-coordinate of the player -->
+<!--   vector[N_passes] prev_pass_length; // Previous pass length -->
+<!--   vector[N_passes] prev_pass_angle; // Previous pass angle -->
+<!--   vector[N_passes] prev_pass_time_in_possession; // Previous pass time in possession -->
+<!--   vector[N_passes] prev_pass_completion_probability; // Completion probability of the previous pass -->
+
+<!--   int<lower=1, upper=N_players> player_id[N_passes]; // Player ID -->
+<!--   int<lower=1, upper=N_positions> position_id[N_passes]; // Position ID -->
+<!--   int<lower=1, upper=N_possteams> possteam_id[N_passes]; // Possession team ID -->
+<!--   int<lower=1, upper=N_oppteams> oppteam_id[N_passes]; // Opposition team ID -->
+<!--   int<lower=1, upper=N_leagues> league_id[N_passes]; // League ID -->
+
+<!-- } -->
+
+
+<!-- parameters { -->
+
+<!--   vector[N_players] player_effect; // Vector of player intercepts -->
+<!--   vector[N_positions] position_effect; // Vector of position intercepts -->
+<!--   vector[N_possteams] possteam_effect; // Vector of possession team intercepts -->
+<!--   vector[N_oppteams] oppteam_effect; // Vector of opposition team intercepts -->
+<!--   vector[N_leagues] league_effect; // Vector of league intercepts -->
+
+<!--   real<lower=0> sigma_players; // Variance of players -->
+<!--   real<lower=0> sigma_positions; // Variance of positions -->
+<!--   real<lower=0> sigma_possteams; // Variance of possession teams -->
+<!--   real<lower=0> sigma_oppteams; // Variance of opposition teams -->
+<!--   real<lower=0> sigma_leagues; // Variance of leagues -->
+
+<!--   real mu_players; // Mean of players -->
+<!--   real mu_positions; // Mean of positions -->
+<!--   real mu_possteams; // Mean of possession teams -->
+<!--   real mu_oppteams; // Mean of opposition teams -->
+<!--   real mu_leagues; // Mean of leagues -->
+
+<!--   real beta_location_x; // Beta for location_x -->
+<!--   real beta_pass_length; // Beta for pass_length -->
+<!--   real beta_pass_angle; // Beta for pass_angle -->
+<!--   real beta_pass_end_x; // Beta for pass_end_x -->
+<!--   real beta_pass_end_y; // Beta for pass_end_y -->
+<!--   real beta_pass_completion_probability; // Beta for pass_completion_probability -->
+<!--   real beta_recipient_x; // Beta for recipient_x -->
+<!--   real beta_recipient_y; // Beta for recipient_y -->
+<!--   real beta_prev_pass_length; // Beta for prev_pass_length -->
+<!--   real beta_prev_pass_angle; // Beta for prev_pass_angle -->
+<!--   real beta_prev_pass_time_in_possession; // Beta for prev_pass_time_in_possession -->
+<!--   real beta_prev_pass_completion_probability; // Beta for prev_pass_completion_probability -->
+
+<!--   real<lower=0> sigma_time; // Residual standard deviation -->
+
+<!-- } -->
+
+<!-- model { -->
+
+<!--   // Conditional mean -->
+<!--   vector[N_passes] mu_time; -->
+
+<!--   // Linear combination -->
+<!--   mu_time = player_effect[player_id] + position_effect[position_id] + possteam_effect[possteam_id] +  -->
+<!--       oppteam_effect[oppteam_id] + league_effect[league_id] +  -->
+<!--       beta_location_x * location_x + beta_pass_length * pass_length + beta_pass_angle * pass_angle +  -->
+<!--       beta_pass_end_x * pass_end_x + beta_pass_end_y * pass_end_y +  -->
+<!--       beta_pass_completion_probability * pass_completion_probability + beta_recipient_x * recipient_x +  -->
+<!--       beta_recipient_y * recipient_y + beta_prev_pass_length * prev_pass_length +  -->
+<!--       beta_prev_pass_angle * prev_pass_angle + beta_prev_pass_time_in_possession * prev_pass_time_in_possession +  -->
+<!--       beta_prev_pass_completion_probability * prev_pass_completion_probability; -->
+
+<!--   // Priors -->
+<!--   beta_location_x ~ normal(0, 1); -->
+<!--   beta_pass_length ~ normal(0, 1); -->
+<!--   beta_pass_angle ~ normal(0, 1); -->
+<!--   beta_pass_end_x ~ normal(0, 1); -->
+<!--   beta_pass_end_y ~ normal(0, 1); -->
+<!--   beta_pass_completion_probability ~ normal(0, 1); -->
+<!--   beta_recipient_x ~ normal(0, 1); -->
+<!--   beta_recipient_y ~ normal(0, 1); -->
+<!--   beta_prev_pass_length ~ normal(0, 1); -->
+<!--   beta_prev_pass_angle ~ normal(0, 1); -->
+<!--   beta_prev_pass_time_in_possession ~ normal(0, 1); -->
+<!--   beta_prev_pass_completion_probability ~ normal(0, 1); -->
+
+<!--   // Hyper-priors -->
+<!--   mu_players ~ normal(0, 1); -->
+<!--   mu_positions ~ normal(0, 1); -->
+<!--   mu_possteams ~ normal(0, 1); -->
+<!--   mu_oppteams ~ normal(0, 1); -->
+<!--   mu_leagues ~ normal(0, 1); -->
+
+<!--   sigma_players ~ cauchy(0, 5); -->
+<!--   sigma_positions ~ cauchy(0, 5); -->
+<!--   sigma_possteams ~ cauchy(0, 5); -->
+<!--   sigma_oppteams ~ cauchy(0, 5); -->
+<!--   sigma_leagues ~ cauchy(0, 5); -->
+
+<!--   // Level 2 -->
+<!--   player_effect ~ normal(mu_players, sigma_players); -->
+<!--   position_effect ~ normal(mu_positions, sigma_positions); -->
+<!--   possteam_effect ~ normal(mu_possteams, sigma_possteams); -->
+<!--   oppteam_effect ~ normal(mu_oppteams, sigma_oppteams); -->
+<!--   league_effect ~ normal(mu_leagues, sigma_leagues); -->
+
+<!--   // Level 1 -->
+<!--   totalTimeInPoss_sqrt ~ normal(mu_time, sigma_time); -->
+
+<!-- } -->
+<!-- " -->
+<!-- ``` -->
+
+<!-- # Create the data list -->
+<!-- ```{r} -->
+<!-- bayes_time_mod_data <- list( -->
+<!--   N_passes = nrow(full_df), -->
+<!--   N_players = length(unique(full_df$player_id)), -->
+<!--   N_positions = length(unique(full_df$position)), -->
+<!--   N_possteams = length(unique(full_df$possession_team)), -->
+<!--   N_oppteams = length(unique(full_df$opposition_team)), -->
+<!--   N_leagues = length(unique(full_df$league)), -->
+<!--   totalTimeInPoss_sqrt = full_df$totalTimeInPoss_sqrt, -->
+<!--   location_x = full_df$location_x, -->
+<!--   pass_length = full_df$pass_length, -->
+<!--   pass_angle = full_df$pass_angle, -->
+<!--   pass_end_x = full_df$pass_end_x, -->
+<!--   pass_end_y = full_df$pass_end_y, -->
+<!--   pass_completion_probability = full_df$pass_completion_probability, -->
+<!--   recipient_x = full_df$recipient_x, -->
+<!--   recipient_y = full_df$recipient_y, -->
+<!--   prev_pass_length = full_df$prev_pass_length, -->
+<!--   prev_pass_angle = full_df$prev_pass_angle, -->
+<!--   prev_pass_time_in_possession = full_df$prev_pass_time_in_possession, -->
+<!--   prev_pass_completion_probability = full_df$prev_pass_completion_probability, -->
+<!--   player_id = full_df$player_i, -->
+<!--   position_id = full_df$position_i, -->
+<!--   possteam_id = full_df$possteam_i, -->
+<!--   oppteam_id = full_df$oppteam_i, -->
+<!--   league_id = full_df$league_i -->
+<!-- )  -->
+<!-- ``` -->
+
+<!-- # Fit the model -->
+<!-- ```{r} -->
+<!-- bayes_time_mod_fit <- stan(model_code = model_code,  -->
+<!--                            data = bayes_time_mod_data,  -->
+<!--                            iter = 500,  -->
+<!--                            chains = 4, -->
+<!--                            cores = 4,  -->
+<!--                            seed = 28) -->
+
+<!-- ``` -->
+
+
