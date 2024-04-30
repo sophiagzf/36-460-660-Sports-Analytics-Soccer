@@ -1,6 +1,6 @@
 ---
 title: "Rhythm is a Footballer"
-author: "Shane Hauck"
+author: "Shane Hauck, Jamie Kim, Sophia Gan, A.J. Vetturini"
 output:
   html_document: default
 ---
